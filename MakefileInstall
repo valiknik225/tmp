@@ -1,0 +1,162 @@
+-include .env.install
+
+install-init:
+
+
+	make install-welcome
+
+	@echo "${BLUE} Step 1: Generate docker-compose.install.yaml ${NC}";
+	make generate-compose
+	@echo "${BLUE} Step 2: Ensure .env.install exists ${NC}"
+	make ensure-env
+	@echo "${BLUE} Step 3: Remove existing container if any ${NC}"
+	make remove-container
+	@echo "${BLUE} Step 4: Launch install container ${NC}"
+	make up-install-container
+
+	@echo "${BLUE} Step 5: Set GIT identity in container ${NC}"
+	make git-config
+	@echo "${BLUE} Step 6: Remove existing /app/install directory ${NC}"
+	make remove-old
+	@echo "${BLUE} Step 7: Install Symfony CLI inside container ${NC}"
+	make install-symfony-cli
+	@echo "${BLUE} Step 8: Create new project ${NC}"
+	make symfony-new
+	make remove-container
+
+	@echo "${BLUE} Step 9: Generate and remove files ${NC}"
+	make generate-files
+	@echo "${BLUE} Step 10: Move to project folder ${NC}"
+	make project-move
+	@echo "${BLUE} Step 11: GIT config ${NC}"
+	make project-git-config
+
+	@echo "${GREEN} Install complete successfully ${NC}"
+	make up-d
+
+install-welcome:
+	@printf "${GREEN}\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s${NC}" \
+	"   __  ____________      ______          __       _____                 ____                     ____           __        ____                    ___ " \
+	"  / / / / ____/ __ \    /_  __/__  _____/ /_     / ___/__  ______ ___  / __/___  ____  __  __   /  _/___  _____/ /_____ _/ / /__  _____   _   __ |__ \ " \
+	" / / / / /_  / / / /_____/ / / _ \/ ___/ __ \    \__ \/ / / / __ \`__ \/ /_/ __ \/ __ \/ / / /   / // __ \/ ___/ __/ __ \`/ / / _ \/ ___/  | | / / __/ /" \
+	"/ /_/ / __/ / /_/ /_____/ / /  __/ /__/ / / /   ___/ / /_/ / / / / / / __/ /_/ / / / / /_/ /  _/ // / / (__  ) /_/ /_/ / / /  __/ /      | |/ / / __/ " \
+	"\\____/_/    \\____/     /_/  \\___/\\___/_/ /_/   /____/\\__, /_/ /_/ /_/_/  \\____/_/ /_/\\__, /  /___/_/ /_/____/\\__/\\__,_/_/_/\\___/_/       |___(_)____/ "\
+	"                                                                                                                    /____/                          /____/  "
+	@echo  "${PURPLE}"
+	@read  -p "Enter Symfony version to install (or press Enter to use latest): " version;
+	@echo  "${NC}"
+	if [ ! -z "$$version" ]; then \
+		echo "SYMFONY_VERSION_INSTALL=$$version" > .env.install.override; \
+	else \
+		echo "SYMFONY_VERSION_INSTALL=stable" > .env.install.override; \
+	fi;
+	echo "Version save $(grep SYMFONY_VERSION_INSTALL .env.install.override | cut -d= -f2)";
+	@echo  "";
+
+
+generate-compose:
+	@echo 'version: "3"' > docker-compose.install.yaml
+	@echo 'services:' >> docker-compose.install.yaml
+	@echo "  symfony-install:" >> docker-compose.install.yaml
+	@echo "    container_name: symfony_${PROJECT_NAME}_install" >> docker-compose.install.yaml
+	@echo "    image: ufotech/php:8.4-fpm" >> docker-compose.install.yaml
+	@echo "    environment:" >> docker-compose.install.yaml
+	@echo "      WORKDIR: ${WORKDIR}" >> docker-compose.install.yaml
+	@if [ -f .env.install.override ]; then \
+		version=$$(grep SYMFONY_VERSION_INSTALL .env.install.override | cut -d= -f2); \
+		echo "      SYMFONY_VERSION_INSTALL: $$version" >> docker-compose.install.yaml; \
+	fi
+	@echo "      GIT_AUTHOR_NAME: $$(git config user.name)" >> docker-compose.install.yaml
+	@echo "      GIT_AUTHOR_EMAIL: $$(git config user.email)" >> docker-compose.install.yaml
+	@echo "    volumes:" >> docker-compose.install.yaml
+	@echo "      - ./:${WORKDIR}" >> docker-compose.install.yaml
+	@echo  "";
+
+ensure-env:
+	@if [ ! -f .env.install ]; then cp .env.install.dist .env.install; fi
+	@echo  "";
+
+remove-container:
+	@if docker ps -a --format '{{.Names}}' | grep -Eq "^symfony_${PROJECT_NAME}_install$$"; then \
+		docker rm -f symfony_${PROJECT_NAME}_install; \
+	fi
+	@echo  "";
+
+up-install-container:
+	docker compose -f docker-compose.install.yaml --env-file .env.install up -d
+	@echo  "";
+
+
+install-symfony-cli:
+	docker exec symfony_${PROJECT_NAME}_install sh -c "curl -sS https://get.symfony.com/cli/installer | bash && mv /root/.symfony5/bin/symfony /usr/local/bin/symfony"
+	@echo  "";
+
+
+remove-old:
+	docker exec symfony_${PROJECT_NAME}_install sh -c "rm -rf /app/install"
+	@echo  "";
+
+
+git-config:
+	docker exec symfony_${PROJECT_NAME}_install sh -c "git config --global user.name \"$$(git config user.name)\""
+	docker exec symfony_${PROJECT_NAME}_install sh -c "git config --global user.email \"$$(git config user.email)\""
+	@echo  "";
+
+
+symfony-new:
+	@if [ -f .env.install.override ]; then \
+	    docker exec symfony_${PROJECT_NAME}_install sh -c "symfony new /app/install --version=\$$SYMFONY_VERSION_INSTALL --webapp"; \
+	else \
+	    docker exec symfony_${PROJECT_NAME}_install sh -c "symfony new /app/install --version=\$$SYMFONY_VERSION_INSTALL --webapp"; \
+	fi
+	@echo  "";
+
+
+
+generate-files:
+	rm -rf ./install/.git
+	rm -rf ./install/compose.yaml
+	rm -rf ./install/compose.override.yaml
+	rm -rf ./.env.install.override
+	rm -rf ./docker-compose.install.yaml
+
+
+	echo  "# Copy from project env file" >> ./install/.env.local
+	cat .env.install >> ./install/.env.local
+	echo  " " >> ./install/.env.local
+	echo  " " >> ./install/.env.local
+
+	echo  "# Generated by install" >> ./install/.env.local
+
+	@sh -c '\
+		envfile=./install/.env; \
+		while read line; do \
+			if [ "$${line:0:1}" != "#" ] && [ "$${line:0:12}" != "DATABASE_URL" ]; then \
+				echo "$$line" >> ./install/.env.local; \
+			fi; \
+		done < $$envfile \
+	'
+	cat ./docker/configs/php/.env.default >> ./install/.env.local
+	echo  "DATABASE_URL=\"mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db_mysql/${MYSQL_DATABASE}?serverVersion=8&charset=utf8mb4\"" >> ./install/.env.local
+	cat ./.gitignore >> ./install/.gitignore
+
+project-move:
+	@cp -rf ./install/ ./
+	@rm -rf ./install
+	@rm -f .env.install .env.install.dist
+
+project-git-config:
+	@sh -c '\
+		echo "${PURPLE}"; \
+		read -p "Enter the git repository url for your new project (or press Enter to skip): " git_url; \
+		echo "${NC}"; \
+		if [ ! -z "$$git_url" ]; then \
+			rm -rf ./.git; \
+			git init && git remote add origin "$$git_url" && git add . && git commit -m "symfony install" && git push --force origin main; \
+			echo "Git initialized with remote $$git_url"; \
+		else \
+			rm -rf ./.git; \
+			echo "Git not initialized"; \
+		fi; \
+		echo ""; \
+	'
